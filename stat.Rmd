@@ -14,17 +14,21 @@ library(dplyr)
 library(DHARMa)
 library(emmeans)
 library(car)
+library(ggplot2)
 ```
 
 ```{r, echo=F}
 env <- read.table("/home/danielred/data/work/projects/eDNA_filters/environment.tsv", header=T)
 data <- read.table("/home/danielred/data/work/projects/eDNA_filters/data.tsv", header=T)
 ```
+
+## Reviewers request
+
 The manuscript lacks an appropriate statistical framework for the field data. The most important weakness is the treatment of field detections as independent observations. The design is inherently hierarchical (8 localities, sampled 3 times, 5 sites pooled per locality, 3 filter types, 3 replicate filters, 3 technical amplification replicates), yet most results are summarized as counts, positivity rates, or scores. **A more appropriate analysis would involve a generalized linear mixed model (GLMM) framework, possibly using locality as a random effect, sampling event as a repeated factor, filter type as fixed effect, assay type as fixed effect, turbidity as covariate.**
 
 At present it is difficult to determine whether apparent differences among filter types or assays remain significant after accounting for repeated sampling and non-independence. The current use of ANOVA appears restricted primarily to laboratory experiments and filtered volume comparisons.
 
-# data 
+# Data 
 
 ```{r}
 str(data)
@@ -57,6 +61,21 @@ edna <- data |>
 edna_agg <- edna |>
   group_by(location, season, samplingId, sampleId, filter, amplificance_method, turb_z, snail) |>
   summarise(pos = sum(presence), n = n(), .groups = "drop")
+```
+
+```{r}
+ev_edna <- edna |>
+  mutate(method = interaction(filter, amplificance_method, sep = "_", drop = TRUE)) |>
+  group_by(location, season, samplingId, method) |>
+  summarise(pos = as.integer(any(presence == 1)), .groups = "drop") |>
+  mutate(method = as.character(method))
+
+ev_snail <- snail |>
+  left_join(distinct(edna, samplingId, location, season), by = "samplingId") |>
+  transmute(location, season, samplingId, method = "snail", pos = snail)
+
+ev <- bind_rows(ev_edna, ev_snail) |>
+  mutate(method = relevel(factor(method), ref = "snail"))
 ```
 
 # stat 1
@@ -115,6 +134,10 @@ summary(m1_agg)
 Anova(m1_agg, type = "II")
 ```
 
+```{r}
+m_bb <- update(m1_agg, family = betabinomial)
+```
+
 ## diag
 
 ```{r}
@@ -122,6 +145,14 @@ res <- simulateResiduals(m1_agg)
 plot(res)
 testDispersion(res)
 ```
+
+
+```{r}
+anova(m1_agg, m_bb)
+AIC(m1_agg, m_bb)
+```
+
+Wow, should use betabinomial instead for this...
 
 ## post-hoc
 
@@ -141,14 +172,25 @@ m_snail <- update(m1, . ~ . + snail)
 summary(m_snail)
 ```
 
+## post-hoc
+
+```{r}
+emmeans(m_snail, pairwise ~ filter | amplificance_method, type = "response")
+emmeans(m_snail, pairwise ~ amplificance_method | filter, type = "response")
+```
+
 # stat 4
 
 Detection sensitivity: only events where infected snails were found
+
+lets say parasite presence in snails is truth
 
 ```{r}
 m_sens <- update(m1, data = subset(edna, snail == 1))
 summary(m_sens)
 ```
+
+location drops to 0, so it basically grasps differences among sites now
 
 ## post-hoc 
 
@@ -156,12 +198,16 @@ summary(m_sens)
 emmeans(m_sens, pairwise ~ filter | amplificance_method, type = "response")
 ```
 
+filter C is better at finding paraistes already found in snails
+
+filter A and C are different, C is better
+
 # stat 5
 
 Event-level agreement with snails (sensitivity / specificity per filter × method)
 
 - sensitivity: percent when par detected (in cases when snails confirm par presence)
-- specificity: percent when par not detected (when snails did not have parasites)
+- specificity: percent when par not detected (when sampled snails did not have parasites)
 
 ```{r}
 edna |>
@@ -170,6 +216,145 @@ edna |>
   group_by(filter, amplificance_method) |>
   summarise(sensitivity = mean(edna_pos[snail == 1]),
             specificity = 1 - mean(edna_pos[snail == 0]),
-            n_snail_pos = sum(snail == 1), .groups = "drop")
+            n_snail_pos = sum(snail == 1),
+            n_snail_neg = sum(snail == 0),
+            .groups = "drop")
 ```
 
+sensitivity with n=5 it would not be wise to publish. `binom.test` could be used to calculate conf intervals
+
+```{r}
+ev |>
+  filter(method != "snail") |>
+  left_join(select(snail, samplingId, snail), by = "samplingId") |>
+  group_by(method) |>
+  summarise(TP = sum(pos == 1 & snail == 1), FN = sum(pos == 0 & snail == 1),
+            TN = sum(pos == 0 & snail == 0), FP = sum(pos == 1 & snail == 0), .groups = "drop") |>
+  rowwise() |>
+  mutate(sens = TP / (TP + FN),
+         sens_lo = binom.test(TP, TP + FN)$conf.int[1], sens_hi = binom.test(TP, TP + FN)$conf.int[2],
+         spec = TN / (TN + FP),
+         spec_lo = binom.test(TN, TN + FP)$conf.int[1], spec_hi = binom.test(TN, TN + FP)$conf.int[2],
+         concord = (TP + TN) / 24,
+         kappa = { po <- (TP+TN)/24; pe <- ((TP+FN)*(TP+FP) + (TN+FP)*(TN+FN))/24^2; (po-pe)/(1-pe) }) |>
+  ungroup()
+```
+
+Well, nothing is significant, ignore this one.
+
+# stat 6
+
+same as first, but without RAA
+
+hopefully it is the same as the first one
+
+```{r}
+#filter effect (qPCR + LAMP, all 3 filters)
+edna_AB <- droplevels(subset(edna, amplificance_method != "RAA"))
+mA <- glmmTMB(presence ~ filter * amplificance_method + turb_z + season +
+                (1 | location) + (1 | samplingId) + (1 | sampleId),
+              family = binomial, data = edna_AB)
+Anova(mA, type = "II")
+emmeans(mA, pairwise ~ filter | amplificance_method, type = "response")
+```
+
+
+```{r}
+#method effect (filter C only, all 3 methods)
+edna_C <- droplevels(subset(edna, filter == "C"))
+mB <- glmmTMB(presence ~ amplificance_method + turb_z + season +
+                (1 | location) + (1 | samplingId) + (1 | sampleId),
+              family = binomial, data = edna_C)
+Anova(mB)
+emmeans(mB, pairwise ~ amplificance_method, type = "response")
+```
+
+# stat 7
+
+same as first, but with a factor of full combination of methods
+
+this way the lack of RAA tests wont be disturbing the interpretation of resutls
+
+```{r}
+edna$fm <- interaction(edna$filter, edna$amplificance_method, drop = TRUE, sep = "_")
+mC <- update(m1, . ~ fm + turb_z + season + (1|location) + (1|samplingId) + (1|sampleId))
+emmeans(mC, pairwise ~ fm, type = "response")
+```
+
+## spec contrasts
+
+```{r}
+emm <- emmeans(mC, ~ fm)
+lv  <- levels(edna$fm)
+L   <- function(a, b) { v <- setNames(rep(0, length(lv)), lv); v[a] <- 1; v[b] <- -1; v }
+cons <- list(
+  "qPCR: A vs B" = L("A_qPCR","B_qPCR"), "qPCR: A vs C" = L("A_qPCR","C_qPCR"), "qPCR: B vs C" = L("B_qPCR","C_qPCR"),
+  "LAMP: A vs B" = L("A_LAMP","B_LAMP"), "LAMP: A vs C" = L("A_LAMP","C_LAMP"), "LAMP: B vs C" = L("B_LAMP","C_LAMP"),
+  "C: qPCR vs LAMP" = L("C_qPCR","C_LAMP"), "C: qPCR vs RAA" = L("C_qPCR","C_RAA"), "C: LAMP vs RAA" = L("C_LAMP","C_RAA"))
+contrast(emm, cons, adjust = "holm", type = "response")   # odds ratios
+```
+
+```{r}
+emm <- emmeans(mC, ~ fm)
+contrast(emm, "trt.vs.ctrl", ref = which(levels(emm)$fm == "C_qPCR"),
+         type = "response", reverse = TRUE)   # odds ratios C_qPCR / others, Dunnett-adjusted
+```
+
+
+# stat 8
+
+aggregate filter and method
+add snail
+and handle snail as reference
+
+```{r}
+with(ev, tapply(pos, method, sum))          # events positive, out of 24
+
+m_ev <- glmmTMB(pos ~ method + season + (1 | location) + (1 | samplingId),
+                family = binomial, data = ev)
+summary(m_ev)
+emmeans(m_ev, trt.vs.ctrl ~ method, ref = "snail", type = "response")  
+```
+
+odds ratio is 1 for filter A and qPCR
+
+```{r}
+ord <- c("snail","A_qPCR","B_qPCR","C_qPCR","A_LAMP","B_LAMP","C_LAMP","C_RAA")
+
+ct <- confint(contrast(emmeans(m_ev, ~ method), "trt.vs.ctrl", ref = 1, type = "response"))
+ct$method <- sub(" / snail", "", ct$contrast)
+ggplot(ct, aes(odds.ratio, factor(method, rev(ord[-1])))) +
+  geom_vline(xintercept = 1, linetype = 2) +
+  geom_pointrange(aes(xmin = asymp.LCL, xmax = asymp.UCL)) +
+  scale_x_log10() + labs(x = "Odds ratio vs snail survey (log scale)", y = NULL) + theme_bw()
+```
+
+
+```{r}
+ev_plot <- ev |>
+  left_join(select(snail, samplingId, snail), by = "samplingId") |>
+  mutate(status = case_when(method == "snail" & pos == 1 ~ "Snail +",
+                            method == "snail"            ~ "Snail −",
+                            pos == 1 & snail == 1 ~ "Both +",
+                            pos == 1 & snail == 0 ~ "eDNA + only",
+                            pos == 0 & snail == 1 ~ "Snail + only",
+                            TRUE                  ~ "Both −"),
+         method = factor(method, ord))
+
+ggplot(ev_plot, aes(method, samplingId, fill = status)) +
+  geom_tile(colour = "white") +
+  facet_grid(location ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_manual(values = c("Both +" = "#1b7837", "eDNA + only" = "#e08214",
+                               "Snail + only" = "#b2182b", "Both −" = "grey90",
+                               "Snail +" = "black", "Snail −" = "grey70")) +
+  labs(x = NULL, y = "Sampling event", fill = NULL) + theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+filterC qPCR and RAA is different from snail
+
+# Conslusions
+
+- dont use stat1 and stat2, instead use stat7 or stat6
+- compared with snails, A_qPCR is closest
+- c_QPCR is the most sensitive (stat7: 0.2365) and differs from others significantly (stat7 contrasts)
