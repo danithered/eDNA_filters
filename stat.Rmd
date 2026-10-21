@@ -1,7 +1,9 @@
 ---
 title: "eDNA filters"
 date: today
-format: html
+format: 
+  html:
+    toc: true
 editor_options: 
   chunk_output_type: console
 ---
@@ -11,6 +13,7 @@ editor_options:
 ```{r}
 library(glmmTMB)
 library(dplyr)
+library(tidyr)
 library(DHARMa)
 library(emmeans)
 library(car)
@@ -76,6 +79,25 @@ ev_snail <- snail |>
 
 ev <- bind_rows(ev_edna, ev_snail) |>
   mutate(method = relevel(factor(method), ref = "snail"))
+```
+
+```{r}
+# function for calc payoff matrix from the article
+score_fun <- function(pos, snail, M = c(TP = 1, FN = -1, FP = 0, TN = 0)) {
+  unname(ifelse(pos == 1 & snail == 1, M["TP"],
+         ifelse(pos == 0 & snail == 1, M["FN"],
+         ifelse(pos == 1 & snail == 0, M["FP"], M["TN"]))))
+}
+
+ev2 <- ev |>
+  filter(method != "snail") |> droplevels() |>
+  left_join(select(snail, samplingId, snail), by = "samplingId") |>
+  mutate(match = as.integer(pos == snail),
+         score = score_fun(pos, snail))
+```
+
+```{r}
+edna_plus_env <- merge(edna |> select(!turbidity & !samplingId), env |> select(!presence), by=c("location", "date"), all.x = T)
 ```
 
 # stat 1
@@ -353,8 +375,80 @@ ggplot(ev_plot, aes(method, samplingId, fill = status)) +
 
 filterC qPCR and RAA is different from snail
 
-# Conslusions
+# stat 9
+
+concordance (are observation the same in snails than with eDNA)
+
+```{r}
+m_match <- glmmTMB(match ~ method + (1 | location) + (1 | samplingId),
+                   family = binomial, data = ev2)
+
+summary(m_match)
+Anova(m_match)
+emmeans(m_match, trt.vs.ctrl ~ method, ref = which(levels(ev2$method) == "A_qPCR"),
+        type = "response", reverse = TRUE)
+```
+
+
+```{r}
+wide <- ev2 |> select(samplingId, method, match) |> pivot_wider(names_from = method, values_from = match)
+DescTools::CochranQTest(as.matrix(wide[, -1]))
+```
+
+# stat 10
+
+payoff matrix
+
+|                | found in snail | not found in snail |
+|----------------|----------------|--------------------|
+| found eDNA     |        1       |           0        |
+| not found eDNA |      -1        |           0        |       
+
+```{r}
+ev2 |>
+  group_by(method) |>
+  summarise(n_match = sum(match), concord = mean(match),
+            conc_lo = binom.test(sum(match), n())$conf.int[1],
+            conc_hi = binom.test(sum(match), n())$conf.int[2],
+            score_total = sum(score),
+            score_mean  = mean(score[snail == 1]), .groups = "drop") |>
+  arrange(desc(score_total))
+
+# friedman.test(score ~ method | samplingId, data = subset(ev2, snail == 1))
+```
+
+## changing the payoff
+
+```{r}
+w <- seq(0, -1, by = -0.05)
+sweep <- purrr::map_dfr(w, 
+                        \(wfp) ev2 |>
+                          mutate(s = score_fun(pos, snail, c(TP = 1, FN = -1, FP = wfp, TN = 0))) |>
+                          group_by(method) |> 
+                          summarise(score = sum(s), .groups = "drop") 
+                        |> mutate(FP_weight = wfp)
+                        )
+
+ggplot(sweep, aes(FP_weight, score, colour = method)) + 
+  geom_line(linewidth = 1) +
+  scale_x_reverse() + 
+  labs(x = "Payoff for eDNA+ / snail− (FP weight)", y = "Total score") + 
+  theme_bw()
+```
+
+Well, as when snail==0 if is 0, it is the same as stat4
+
+# stat11
+
+Same as stat7, but with all environment variables from `edna_plus_env`
+
+# Conclusions
 
 - dont use stat1 and stat2, instead use stat7 or stat6
 - compared with snails, A_qPCR is closest
 - c_QPCR is the most sensitive (stat7: 0.2365) and differs from others significantly (stat7 contrasts)
+- stat3: indeed, molecular methods show something similar to snail data
+- 3 methods to compare it with snail data. Which one is the best?
+  - stat4: drop data where snail+presence == 0 -> 0: did not find it, where it should, 1: it found it
+  - stat8: aggregate molecular data and add snail as an equal level method, then contrast it with snail as reference
+  - stat9: concordance test: snail presence == eDNA presence
