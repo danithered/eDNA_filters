@@ -1,0 +1,685 @@
+---
+title: "eDNA filters"
+date: today
+format: 
+  html:
+    toc: true
+  pdf: default
+editor_options: 
+  chunk_output_type: console
+---
+
+# General
+
+```{r}
+#| include: false
+library(glmmTMB)
+
+library(multcomp)
+
+library(dplyr)
+library(tidyr)
+library(DHARMa)
+library(emmeans)
+library(car)
+library(ggplot2)
+library(MuMIn)
+
+library(emmeans)
+library(multcompView)
+library(effects)
+library(kableExtra)
+
+set.seed(42)
+```
+
+```{r, echo=F}
+# env <- read.table("/home/danielred/data/work/projects/eDNA_filters/environment.tsv", header=T)
+env <- read.table("C:/Users/amira/Documents/BC_26.07/eDNA_filters/environment.tsv", header=T)
+# data <- read.table("/home/danielred/data/work/projects/eDNA_filters/data.tsv", header=T)
+data <- read.table("C:/Users/amira/Documents/BC_26.07/eDNA_filters/data.tsv", header=T)
+```
+
+# Reviewers request
+
+The manuscript lacks an appropriate statistical framework for the field data. The most important weakness is the treatment of field detections as independent observations. The design is inherently hierarchical (8 localities, sampled 3 times, 5 sites pooled per locality, 3 filter types, 3 replicate filters, 3 technical amplification replicates), yet most results are summarized as counts, positivity rates, or scores. **A more appropriate analysis would involve a generalized linear mixed model (GLMM) framework, possibly using locality as a random effect, sampling event as a repeated factor, filter type as fixed effect, assay type as fixed effect, turbidity as covariate.**
+
+At present it is difficult to determine whether apparent differences among filter types or assays remain significant after accounting for repeated sampling and non-independence. The current use of ANOVA appears restricted primarily to laboratory experiments and filtered volume comparisons.
+
+# Data 
+
+```{r}
+#| include: false
+str(data)
+sum(is.na(data$presence))
+with(data, table(amplificance_method, is.na(presence)))
+
+data <- data |>
+  mutate(across(c(location, season, filter, amplificance_method, samplingId), factor),
+         volume   = as.numeric( trimws(volume, whitespace = "[ \\h\\v]") ), # trim unicode ws too
+         presence = as.integer(presence))
+
+
+
+snail <- data |>
+  filter(amplificance_method == "snail") |>
+  group_by(samplingId) |>
+  summarise(snail = as.integer(any(presence == 1, na.rm = TRUE)),
+            consistent = n_distinct(na.omit(presence)) <= 1, .groups = "drop")
+
+all(snail$consistent)
+
+edna <- data |>
+  filter(amplificance_method != "snail", !is.na(presence)) |>
+  droplevels() |>
+  left_join(snail, by = "samplingId") |>
+  mutate(sampleId = interaction(samplingId, filter, replication, drop = TRUE),
+         turb_z   = as.numeric(scale(log(turbidity))),
+         amplificance_method = relevel(amplificance_method, "qPCR"))
+```
+
+```{r}
+#| include: false
+ev_edna <- edna |>
+  mutate(method = interaction(filter, amplificance_method, sep = "_", drop = TRUE)) |>
+  group_by(location, season, samplingId, method) |>
+  summarise(pos = as.integer(any(presence == 1)), .groups = "drop") |>
+  mutate(method = as.character(method))
+
+ev_snail <- snail |>
+  left_join(distinct(edna, samplingId, location, season), by = "samplingId") |>
+  transmute(location, season, samplingId, method = "snail", pos = snail)
+
+ev <- bind_rows(ev_edna, ev_snail) |>
+  mutate(method = relevel(factor(method), ref = "snail"))
+```
+
+```{r}
+#| include: false
+# function for calc payoff matrix from the article
+score_fun <- function(pos, snail, M = c(TP = 1, FN = -1, FP = 0, TN = 0)) {
+  unname(ifelse(pos == 1 & snail == 1, M["TP"],
+         ifelse(pos == 0 & snail == 1, M["FN"],
+         ifelse(pos == 1 & snail == 0, M["FP"], M["TN"]))))
+}
+
+ev2 <- ev |>
+  filter(method != "snail") |> droplevels() |>
+  dplyr::left_join(dplyr::select(snail, samplingId, snail), by = "samplingId") |>
+  mutate(match = as.integer(pos == snail),
+         score = score_fun(pos, snail))
+```
+
+
+```{r}
+# presence: did the molecular method detect the presence of parasites?
+# snail: was the presence of parasites detected in snails?
+# match: presence in molecular methods == presence based on snails?
+ev2 <- 
+  edna |>
+  mutate(
+    method = interaction(filter, amplificance_method, sep = "_", drop = TRUE),
+    match = as.numeric(snail == presence)
+    ) |>
+  mutate(
+    method = as.character(method),
+    filter = as.character(filter),
+    amplificance_method = as.character(amplificance_method)
+    )
+```
+
+```{r}
+# aggregated for the technical replications
+# presence: did any of the 3 technical replications detect the presence of parasites?
+# snail: was the presence of parasites detected in snails?
+# match: presence in molecular methods == presence based on snails?
+ev3 <- 
+  edna |>
+  mutate(method = interaction(filter, amplificance_method, sep = "_", drop = TRUE)) |>
+  group_by(location, samplingId, sampleId, season, filter, amplificance_method, method) |>
+  summarise(
+    presence = as.integer(any(presence == 1)),
+    snail = as.numeric(any(snail)),
+    match = as.numeric(snail == presence),
+    turb_z = first(turb_z),
+    .groups = "drop") |>
+  mutate(
+    method = as.character(method),
+    filter = as.character(filter),
+    amplificance_method = as.character(amplificance_method)
+    )
+```
+
+```{r}
+#| include: false
+edna_plus_env <- merge(edna |> select(!turbidity & !samplingId), env |> select(!presence), by=c("location", "date"), all.x = T)
+```
+
+
+```{r}
+
+#filter effect (all 3 filters + (qPCR + LAMP) )
+edna_nRAA <- droplevels(subset(edna, amplificance_method != "RAA"))
+str(edna_nRAA)
+
+
+#method effect (filter C only + all 3 methods)
+edna_C <- droplevels(subset(edna, filter == "C"))
+str(edna_C)
+
+```
+
+
+- fixed factors are:
+  - *filter* = filter type
+  - *amplificance_method* = amplififaction methid type
+  - *turb_z* = turbidity
+  - *season* = seasons
+- random factors are:
+  - *location* = sampling locality
+  - *samplingId* = location + date
+  - *sampleId* = samplingID (location + date) + filter + replication
+
+# Full models with *season* interactions 
+## FILTER (*A*, *B*, *C*) + AMPLIF (*qPCR*, *LAMP*)
+### Model selection 
+```{r}
+
+m_RAA_f0s <- glmmTMB(presence ~ filter + amplificance_method + turb_z + season +
+                      filter : amplificance_method + 
+                      filter : turb_z + 
+                      filter : season + 
+                      turb_z : season + 
+                      (1 | location) + (1 | samplingId) + (1 | sampleId),
+                    family = binomial, data = edna_nRAA)
+
+summary(m_RAA_f0s)
+glmmTMB:::Anova.glmmTMB(m_RAA_f0s, type=3)
+
+
+options(na.action = "na.fail")
+#getAllTerms(m_RAA_f0s)
+dds <- MuMIn::dredge(m_RAA_f0s, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m1s <- MuMIn::get.models(dds, subset = 1)[[1]] 
+m2s <- MuMIn::get.models(dds, subset = 2)[[1]]
+anova(m1s, m2s)
+
+```
+
+### Best model
+Here I selelected the 2nd "best" model based on AIC. There is no significant difference between the two models, but the 1st one contains interaction with higher than 0.05 P (filter:season  P =  0.068592).
+```{r}
+
+summary(m2s)
+glmmTMB:::Anova.glmmTMB(m2s, type=3)
+
+m2s.emm <- emmeans(m2s,
+                  pairwise ~ filter | amplificance_method,
+                  type = "response")
+
+# m2s.emm <- emmeans(m2s, pairwise ~ filter : amplificance_method, type="response")
+
+kable(
+  multcomp::cld(m2s.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m2s, type="response"))
+m2s_Res1 <- simulateResiduals(m2s)
+plot(m2s_Res1, quantreg = T)
+testDispersion(m2s_Res1)
+
+
+# ( allsets <- emmeans(m2s, ".") )
+# contrast(allsets, "eff")    # all effects
+```
+
+## FILTER (*C*) + AMPLIF (*qPCR*, *LAMP*, *RAA*) 
+### Model selection 
+```{r}
+
+m_C_f0s <- glmmTMB(presence ~  amplificance_method + turb_z + season +
+                     turb_z : season +
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial, data = edna_C)
+
+summary(m_C_f0s)
+glmmTMB:::Anova.glmmTMB(m_C_f0s, type=3)
+
+
+options(na.action = "na.fail")
+ddcs <- MuMIn::dredge(m_C_f0s, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m1cs <- MuMIn::get.models(ddcs, subset = 1)[[1]] 
+
+```
+
+### Best model
+```{r}
+
+summary(m1cs)
+glmmTMB:::Anova.glmmTMB(m1cs, type=3)
+
+m1cs.emm <- emmeans(m1cs,
+                  pairwise ~ amplificance_method,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1cs.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m1cs, type="response"))
+m1cs_Res1 <- simulateResiduals(m1cs)
+plot(m1cs_Res1, quantreg = T)
+testDispersion(m1cs_Res1)
+
+```
+
+
+
+# Full models without *season* interactions
+## FILTER (*A*, *B*, *C*) + AMPLIF (*qPCR*, *LAMP*)
+### Model selection 
+```{r}
+
+m_RAA_f0 <- glmmTMB(presence ~ filter + amplificance_method + turb_z + season +
+                      filter : amplificance_method + 
+                      filter : turb_z + 
+                      (1 | location) + (1 | samplingId) + (1 | sampleId),
+                    family = binomial, data = edna_nRAA)
+
+summary(m_RAA_f0)
+glmmTMB:::Anova.glmmTMB(m_RAA_f0, type=3)
+
+
+options(na.action = "na.fail")
+dd <- MuMIn::dredge(m_RAA_f0, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m1 <- MuMIn::get.models(dd, subset = 1)[[1]] 
+
+
+```
+
+### Best model
+```{r}
+
+summary(m1)
+glmmTMB:::Anova.glmmTMB(m1, type=3)
+
+m1.emm <- emmeans(m1,
+                  pairwise ~ filter | amplificance_method,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m1, type="response"))
+m1_Res1 <- simulateResiduals(m1)
+plot(m1_Res1, quantreg = T)
+testDispersion(m1_Res1)
+
+```
+
+
+## FILTER (*C*) + AMPLIF (*qPCR*, *LAMP*, *RAA*)  
+### Model selection 
+```{r}
+
+m_C_f0 <- glmmTMB(presence ~  amplificance_method + turb_z + season +
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial, data = edna_C)
+
+summary(m_C_f0)
+glmmTMB:::Anova.glmmTMB(m_C_f0, type=2)
+
+
+options(na.action = "na.fail")
+ddc <- MuMIn::dredge(m_C_f0, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m1c <- MuMIn::get.models(ddc, subset = 1)[[1]] 
+
+```
+
+### Best model
+```{r}
+
+summary(m1c)
+glmmTMB:::Anova.glmmTMB(m1c, type=2)
+
+m1c.emm <- emmeans(m1c,
+                  pairwise ~ amplificance_method,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1c.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m1c, type="response"))
+m1c_Res1 <- simulateResiduals(m1c)
+plot(m1c_Res1, quantreg = T)
+testDispersion(m1c_Res1)
+
+```
+
+
+# Full combination of methods
+*fm* means the combination of filter types and amplification methods.
+```{r}
+
+edna$fm <- interaction(edna$filter, edna$amplificance_method, drop = TRUE, sep = "_")
+
+```
+
+## Full model with *season* interactions
+### Model selection 
+```{r}
+
+m_fms_f0 <- glmmTMB(presence ~  fm + turb_z + season +
+                      fm : turb_z + 
+                      fm : season + 
+                      turb_z : season + 
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial, data = edna)
+
+
+summary(m_fms_f0)
+glmmTMB:::Anova.glmmTMB(m_fms_f0, type=2)
+
+
+options(na.action = "na.fail")
+ddfms <- MuMIn::dredge(m_fms_f0, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m1fms <- MuMIn::get.models(ddfms, subset = 1)[[1]] 
+
+```
+
+### Best model
+```{r}
+
+summary(m1fms)
+glmmTMB:::Anova.glmmTMB(m1fms, type=3)
+
+m1fms.emm <- emmeans(m1fms,
+                  pairwise ~ fm,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1fms.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m1fms, type="response"))
+m1fms_Res1 <- simulateResiduals(m1fms)
+plot(m1fms_Res1, quantreg = T)
+testDispersion(m1fms_Res1)
+
+```
+
+
+
+## Full model without *season* interactions
+### Model selection 
+```{r}
+
+m_fm_f0 <- glmmTMB(presence ~  fm + turb_z + season +
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial, data = edna)
+
+
+summary(m_fm_f0)
+glmmTMB:::Anova.glmmTMB(m_fm_f0, type=2)
+
+
+options(na.action = "na.fail")
+ddfm <- MuMIn::dredge(m_fm_f0, rank=AIC)
+options(na.action = "na.omit")
+m1fm <- MuMIn::get.models(ddfm, subset = 1)[[1]] 
+
+```
+
+### Best model
+```{r}
+
+summary(m1fm)
+glmmTMB:::Anova.glmmTMB(m1fm, type=2)
+
+m1fm.emm <- emmeans(m1fm,
+                  pairwise ~ fm,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1fm.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m1fm, type="response"))
+m1fm_Res1 <- simulateResiduals(m1fm)
+plot(m1fm_Res1, quantreg = T)
+testDispersion(m1fm_Res1)
+
+```
+
+
+# Snail concordance
+
+Are observation the same in snails than with eDNA?
+
+```{r}
+
+m_match <- glmmTMB(match ~ method +
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial,
+                   data = ev2)
+
+summary(m_match)
+Anova(m_match)
+emmeans(m_match, trt.vs.ctrl ~ method, ref = which(levels(ev2$method) == "A_qPCR"),
+        type = "response", reverse = TRUE)
+
+
+kable(glmmTMB:::Anova.glmmTMB(m_match, type=2))%>%
+  row_spec(c(1), background ="yellow") %>%
+  kable_styling(latex_options = "HOLD_position")
+
+E1<-residuals(m_match, type="response")
+plot(E1)
+
+plot(simulateResiduals(m_match))
+
+Res1 <- simulateResiduals(m_match)
+plot(Res1, quantreg = FALSE)
+
+plot(allEffects(m_match, type="response"))
+
+m_match.emm <- emmeans(m_match, ~ method, type="response")
+
+kable(multcomp::cld(m_match.emm, adjust="sidak", Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+
+```{r}
+wide <- ev2 |> select(samplingId, method, match) |> pivot_wider(names_from = method, values_from = match)
+DescTools::CochranQTest(as.matrix(wide[, -1]))
+```
+
+
+## new dataset
+
+```{r}
+m_match <- glmmTMB(match ~ method + season + turb_z + 
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial,
+                   data = ev2)
+
+summary(m_match)
+Anova(m_match)
+
+m_match.emm <- emmeans(m_match,
+                  ~ method,
+                  at = list(turb_z = 0)
+                  )
+
+kable(glmmTMB:::Anova.glmmTMB(m_match, type=2)) |>
+  row_spec(c(1), background ="yellow") |>
+  kable_styling(latex_options = "HOLD_position")
+
+E1<-residuals(m_match, type="response")
+plot(E1)
+
+plot(simulateResiduals(m_match))
+
+Res1 <- simulateResiduals(m_match)
+plot(Res1, quantreg = FALSE)
+
+plot(allEffects(m_match, type="response"))
+
+kable(multcomp::cld(m_match.emm, adjust="sidak", Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r}
+ct <- as.data.frame(
+  confint(m_match.emm, 
+          type = "response",
+          adjust = "sidak")
+)
+
+
+ggplot(ct, aes(x = prob, y = reorder(method, prob))) +
+  geom_errorbar(
+    aes(xmin = asymp.LCL, xmax = asymp.UCL),
+    orientation = "y",
+    width = 0.15
+  ) +
+  geom_point(size = 2.5) +
+  scale_x_continuous(
+    limits = c(0, 1),
+    labels = scales::label_percent()
+  ) +
+  labs(
+    x = "Estimated agreement with snail survey",
+    y = "Filter and amplification method",
+    title = "Agreement between molecular and snail-based detection",
+    subtitle = "Points: estimated probabilities; bars: 95% confidence intervals"
+  ) +
+  theme_bw()
+```
+
+```{r}
+event_agreement <- ev2 |>
+  summarise(
+    agreement = mean(match, na.rm = TRUE),
+    n_tests = sum(!is.na(match)),
+    .by = c(samplingId, method)
+  ) |>
+  filter(n_tests > 0)
+
+letters_df <- multcomp::cld(
+  m_match.emm,
+  adjust = "sidak",
+  Letters = LETTERS
+) |>
+  as.data.frame() |>
+  transmute(
+    method = as.character(method),
+    group = trimws(.group)
+  )
+
+method_order <- event_agreement |>
+  summarise(mean_agreement = mean(agreement), .by = method) |>
+  arrange(mean_agreement) |>
+  pull(method) |>
+  as.character()
+
+ggplot(
+  event_agreement,
+  aes(
+    x = factor(method, levels = method_order),
+    y = agreement
+  )
+) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "grey50") +
+  geom_boxplot() +
+  geom_text(
+    data = letters_df,
+    aes(x = factor(method, levels = method_order), y = 1.08, label = group),
+    inherit.aes = FALSE,
+    size = 4
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.15),
+    breaks = seq(0, 1, 0.25),
+    labels = scales::label_percent()
+  ) +
+  labs(
+    y = "Agreement with snail survey"
+  ) +
+  theme_minimal()
+```
+
+
+## with aggregated
+
+```{r}
+m_match_aggr <- glmmTMB(match ~ method + season + turb_z + 
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial,
+                   data = ev3)
+
+summary(m_match_agg)
+Anova(m_match_agg)
+
+m_match_agg.emm <- emmeans(m_match_agg,
+                  pairwise ~ method,
+                  type = "response")
+
+kable(glmmTMB:::Anova.glmmTMB(m_match_agg, type=2)) |>
+  row_spec(c(1), background ="yellow") |>
+  kable_styling(latex_options = "HOLD_position")
+
+E1<-residuals(m_match_agg, type="response")
+plot(E1)
+
+plot(simulateResiduals(m_match_agg))
+
+Res1 <- simulateResiduals(m_match_agg)
+plot(Res1, quantreg = FALSE)
+
+plot(allEffects(m_match_agg, type="response"))
+
+m_match_agg.emm <- emmeans(m_match_agg, ~ method, type="response")
+
+kable(multcomp::cld(m_match_agg.emm, adjust="sidak", Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+```
+

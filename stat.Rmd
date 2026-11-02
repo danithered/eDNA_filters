@@ -60,7 +60,13 @@ edna <- data |>
   mutate(sampleId = interaction(samplingId, filter, replication, drop = TRUE),
          turb_z   = as.numeric(scale(log(turbidity))),
          amplificance_method = relevel(amplificance_method, "qPCR"))
+```
 
+```{r}
+edna |> filter(!is.na(presence)) -> edna
+```
+
+```{r}
 edna_agg <- edna |>
   group_by(location, season, samplingId, sampleId, filter, amplificance_method, turb_z, snail) |>
   summarise(pos = sum(presence), n = n(), .groups = "drop")
@@ -300,6 +306,7 @@ this way the lack of RAA tests wont be disturbing the interpretation of resutls
 ```{r}
 edna$fm <- interaction(edna$filter, edna$amplificance_method, drop = TRUE, sep = "_")
 mC <- update(m1, . ~ fm + turb_z + season + (1|location) + (1|samplingId) + (1|sampleId))
+summary(mC)
 emmeans(mC, pairwise ~ fm, type = "response")
 ```
 
