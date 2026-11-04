@@ -4,6 +4,7 @@ date: today
 format: 
   html:
     toc: true
+    embed-resources: true
   pdf: default
 editor_options: 
   chunk_output_type: console
@@ -93,28 +94,6 @@ ev2 <-
     )
 ```
 
-```{r}
-# aggregated for the technical replications
-# presence: did any of the 3 technical replications detect the presence of parasites?
-# snail: was the presence of parasites detected in snails?
-# match: presence in molecular methods == presence based on snails?
-ev3 <- 
-  edna |>
-  mutate(method = interaction(filter, amplificance_method, sep = "_", drop = TRUE)) |>
-  group_by(location, samplingId, sampleId, season, filter, amplificance_method, method) |>
-  summarise(
-    presence = as.integer(any(presence == 1)),
-    snail = as.numeric(any(snail)),
-    match = as.numeric(snail == presence),
-    turb_z = first(turb_z),
-    .groups = "drop") |>
-  mutate(
-    method = as.character(method),
-    filter = as.character(filter),
-    amplificance_method = as.character(amplificance_method)
-    )
-```
-
 
 ```{r}
 
@@ -131,14 +110,15 @@ str(edna_C)
 
 
 - fixed factors are:
-  - *filter* = filter type
-  - *amplificance_method* = amplififaction methid type
+  - *filter* = filter type (`A`, `B`, `C`)
+  - *amplificance_method* = amplififcation method type (`qPCR`, `LAMP`, `RAA`)
   - *turb_z* = turbidity
   - *season* = seasons
 - random factors are:
   - *location* = sampling locality
   - *samplingId* = location + date
   - *sampleId* = samplingID (location + date) + filter + replication
+  
 
 # Statistics
 
@@ -159,7 +139,9 @@ str(edna_C)
   - aggregate categories (e.g., A_qPCR, C_RAA)
 
 # Full models with *season* interactions 
-## FILTER (*A*, *B*, *C*) + AMPLIF (*qPCR*, *LAMP*)
+
+## Stat 1 aS: FILTER (*A*, *B*, *C*) + AMPLIF (*qPCR*, *LAMP*)
+
 ### Model selection 
 ```{r}
 
@@ -216,7 +198,7 @@ testDispersion(m2s_Res1)
 # contrast(allsets, "eff")    # all effects
 ```
 
-## FILTER (*C*) + AMPLIF (*qPCR*, *LAMP*, *RAA*) 
+## Stat 1 bS: FILTER (*C*) + AMPLIF (*qPCR*, *LAMP*, *RAA*) 
 ### Model selection 
 ```{r}
 
@@ -305,8 +287,11 @@ bind_rows(
 ```
 
 # Full models without *season* interactions
-## FILTER (*A*, *B*, *C*) + AMPLIF (*qPCR*, *LAMP*)
+
+## Stat 1 a: FILTER (*A*, *B*, *C*) + AMPLIF (*qPCR*, *LAMP*)
+
 ### Model selection 
+
 ```{r}
 
 m_RAA_f0 <- glmmTMB(presence ~ filter + amplificance_method + turb_z + season +
@@ -328,6 +313,7 @@ m1 <- MuMIn::get.models(dd, subset = 1)[[1]]
 ```
 
 ### Best model
+
 ```{r}
 
 summary(m1)
@@ -376,8 +362,10 @@ emmip(
   theme_bw()
 ```
 
-## FILTER (*C*) + AMPLIF (*qPCR*, *LAMP*, *RAA*)  
+## Stat 1 b: FILTER (*C*) + AMPLIF (*qPCR*, *LAMP*, *RAA*)  
+
 ### Model selection 
+
 ```{r}
 
 m_C_f0 <- glmmTMB(presence ~  amplificance_method + turb_z + season +
@@ -524,7 +512,7 @@ edna$fm <- interaction(edna$filter, edna$amplificance_method, drop = TRUE, sep =
 
 ```
 
-## Full model with *season* interactions
+## Stat 2s: Full model with *season* interactions
 ### Model selection 
 ```{r}
 
@@ -573,8 +561,7 @@ testDispersion(m1fms_Res1)
 
 ```
 
-## Full model without *season* interactions
-
+## Stat 2: Full combinaton model without *season* interactions
 ### Model selection 
 
 ```{r}
@@ -674,7 +661,7 @@ ggplot(plot_data, aes(x = prob, y = fm)) +
 
 Are observation the same in snails than with eDNA?
 
-## Full model with *season* interactions
+## Stat 3s: Full model with *season* interactions
 
 ### Model selection 
 
@@ -721,7 +708,7 @@ testDispersion(match1_Res1)
 
 ```
 
-## Full model without *season* interactions
+## Stat 3: Full model without *season* interactions
 
 ### Model selection 
 
@@ -736,7 +723,7 @@ summary(m_match2_full)
 glmmTMB:::Anova.glmmTMB(m_match2_full, type=2)
 
 options(na.action = "na.fail")
-d_match2 <- MuMIn::dredge(m_match2_full, rank=AIC)
+d_match2 <- MuMIn::dredge(m_match2_full, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
 options(na.action = "na.omit")
 m_match2 <- MuMIn::get.models(d_match2, subset = 1)[[1]] 
 ```
@@ -768,63 +755,46 @@ testDispersion(match2_Res1)
 
 ```
 
-
 ```{r}
-plot(allEffects(m_match2, type="response"))
+emm <- emmeans(m_match2, ~ method, type = "response")
+plot_data <- as.data.frame(emm)
 
-kable(multcomp::cld(m_match2.emm, adjust="sidak", Letters=LETTERS) ) |>
-  kable_styling(latex_options = "HOLD_position")
-```
+cld_data <- as.data.frame(
+  multcomp::cld(
+    emm,
+    adjust = "bonferroni",
+    Letters = LETTERS
+  )
+)
 
-```{r}
-event_agreement <- ev2 |>
-  summarise(
-    agreement = mean(match, na.rm = TRUE),
-    n_tests = sum(!is.na(match)),
-    .by = c(samplingId, method)
+plot_data <- plot_data |>
+  left_join(
+    cld_data |> select(method, .group),
+    by = "method"
   ) |>
-  filter(n_tests > 0)
-
-letters_df <- multcomp::cld(
-  m_match2.emm,
-  adjust = "sidak",
-  Letters = LETTERS
-) |>
-  as.data.frame() |>
-  transmute(
-    method = as.character(method),
-    group = trimws(.group)
+  mutate(
+    .group = trimws(.group),
+    method = factor(method)
   )
 
-method_order <- event_agreement |>
-  summarise(mean_agreement = mean(agreement), .by = method) |>
-  arrange(mean_agreement) |>
-  pull(method) |>
-  as.character()
-
-ggplot(
-  event_agreement,
-  aes(
-    x = factor(method, levels = method_order),
-    y = agreement
-  )
-) +
-  geom_hline(yintercept = 1, linetype = "dashed", colour = "grey50") +
-  geom_boxplot() +
+ggplot(plot_data, aes(x = prob, y = method)) +
+  geom_errorbar(
+    aes(xmin = asymp.LCL, xmax = asymp.UCL),
+    orientation = "y",
+    width = 0.2,
+    linewidth = 0.7
+  ) +
+  geom_point(size = 3) +
   geom_text(
-    data = letters_df,
-    aes(x = factor(method, levels = method_order), y = 1.08, label = group),
-    inherit.aes = FALSE,
+    aes(x = asymp.UCL + 0.025, label = .group),
+    hjust = 0,
     size = 4
   ) +
-  scale_y_continuous(
-    limits = c(0, 1.15),
-    breaks = seq(0, 1, 0.25),
+  scale_x_continuous(
     labels = scales::label_percent()
   ) +
   labs(
-    y = "Agreement with snail survey"
+    title = "Effect of different molecular methods"
   ) +
   theme_minimal()
 ```
-
