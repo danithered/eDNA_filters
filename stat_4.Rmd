@@ -1,0 +1,685 @@
+---
+title: "eDNA filters"
+date: today
+format:
+   html:
+     toc: true
+     embed-resources: true
+   pdf: default
+editor_options:
+   chunk_output_type: console
+---
+
+# General
+
+```{r}
+#| include: false
+library(glmmTMB)
+
+library(multcomp)
+
+library(dplyr)
+library(tidyr)
+library(DHARMa)
+library(emmeans)
+library(car)
+library(ggplot2)
+library(MuMIn)
+
+library(emmeans)
+library(multcompView)
+library(effects)
+library(kableExtra)
+
+set.seed(42)
+```
+
+```{r, echo=F}
+
+env <- read.table("environment.tsv", header=T)
+
+data <- read.table("data.tsv", header=T)
+```
+
+# Reviewers request
+
+The manuscript lacks an appropriate statistical framework for the field data. The most important weakness is the treatment of field detections as independent observations. The design is inherently hierarchical (8 localities, sampled 3 times, 5 sites pooled per locality, 3 filter types, 3 replicate filters, 3 technical amplification replicates), yet most results are summarized as counts, positivity rates, or scores. **A more appropriate analysis would involve a generalized linear mixed model (GLMM) framework, possibly using locality as a random effect, sampling event as a repeated factor, filter type as fixed effect, assay type as fixed effect, turbidity as covariate.**
+
+At present it is difficult to determine whether apparent differences among filter types or assays remain significant after accounting for repeated sampling and non-independence. The current use of ANOVA appears restricted primarily to laboratory experiments and filtered volume comparisons.
+
+# Data 
+
+```{r}
+#| include: false
+str(data)
+sum(is.na(data$presence))
+with(data, table(amplificance_method, is.na(presence)))
+
+data <- data |>
+  mutate(across(c(location, season, filter, amplificance_method, samplingId), factor),
+         volume   = as.numeric( trimws(volume, whitespace = "[ \\h\\v]") ), # trim unicode ws too
+         presence = as.integer(presence))
+
+snail <- data |>
+  filter(amplificance_method == "snail") |>
+  group_by(samplingId) |>
+  summarise(snail = as.integer(any(presence == 1, na.rm = TRUE)),
+            consistent = n_distinct(na.omit(presence)) <= 1, .groups = "drop")
+
+all(snail$consistent)
+
+edna <- data |>
+  filter(amplificance_method != "snail", !is.na(presence)) |>
+  droplevels() |>
+  left_join(snail, by = "samplingId") |>
+  mutate(sampleId = interaction(samplingId, filter, replication, drop = TRUE),
+         turb_z   = as.numeric(scale(log(turbidity))),
+         amplificance_method = relevel(amplificance_method, "qPCR"))
+```
+
+```{r}
+# presence: did the molecular method detect the presence of parasites?
+# snail: was the presence of parasites detected in snails?
+# match: presence in molecular methods == presence based on snails?
+ev2 <- 
+  edna |>
+  mutate(
+    method = interaction(filter, amplificance_method, sep = "_", drop = TRUE),
+    match = as.numeric(snail == presence)
+    ) |>
+  mutate(
+    method = as.character(method),
+    filter = as.character(filter),
+    amplificance_method = as.character(amplificance_method)
+    )
+```
+
+
+```{r}
+
+#filter effect (all 3 filters + (qPCR + LAMP) )
+edna_nRAA <- droplevels(subset(edna, amplificance_method != "RAA"))
+str(edna_nRAA)
+
+
+#method effect (filter C only + all 3 methods)
+edna_C <- droplevels(subset(edna, filter == "C"))
+str(edna_C)
+
+```
+
+
+- fixed factors are:
+  - *filter* = filter type (`A`, `B`, `C`)
+  - *amplificance_method* = analytical strategies (`qPCR`, `LAMP`, `RAA`)
+  - *turb_z* = turbidity
+  - *season* = seasons
+- random factors are:
+  - *location* = sampling locality
+  - *samplingId* = location + date (= barrel ID)
+  - *sampleId* = samplingID (location + date) + filter + replication (= filtered volume)
+  
+
+# Statistics
+
+- Stat 1
+  - Stat 1a
+    - sensitivity (do they detect the presence of parasites?)
+    - A, B, C filters
+    - qPCR, LAMP
+  - Stat 1b
+    - sensitivity (do they detect the presence of parasites?)
+    - C filter only
+    - qPCR, LAMP, RAA
+- Stat 2 ($\to$ Supplement)
+  - sensitivity (do they detect the presence of parasites?)
+  - aggregate categories (e.g., A_qPCR, C_RAA)
+- Stat 3
+  - concordance (do the observations agree with the parasite presence detected in snails?)
+  - aggregate categories (e.g., A_qPCR, C_RAA)
+
+# Stat 1 
+## Stat 1 a: FILTER (*A*, *B*, *C*) + AMPLIF (*qPCR*, *LAMP*)
+### Model selection 
+```{r}
+
+m_RAA_f0 <- glmmTMB(presence ~ filter + amplificance_method + turb_z + season +
+                      filter : amplificance_method + 
+                      filter : turb_z + 
+                      (1 | location) + (1 | samplingId) + (1 | sampleId),
+                    family = binomial, data = edna_nRAA)
+
+summary(m_RAA_f0)
+glmmTMB:::Anova.glmmTMB(m_RAA_f0, type=3)
+
+
+options(na.action = "na.fail")
+dd <- MuMIn::dredge(m_RAA_f0, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m1 <- MuMIn::get.models(dd, subset = 1)[[1]] 
+
+
+```
+
+### Best model
+```{r}
+summary(m1)
+glmmTMB:::Anova.glmmTMB(m1, type=3)
+```
+
+
+```{r}
+m1.emm_f <- emmeans(m1,
+                  pairwise ~ filter,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1.emm_f,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+
+```{r}
+m1.emm_a <- emmeans(m1,
+                  pairwise ~ amplificance_method,
+                  type = "response")
+
+kable(
+  multcomp::cld(m1.emm_a,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+```{r}
+m1.emm <- emmeans(m1,
+                  pairwise ~ filter | amplificance_method,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+```
+
+
+```{r}
+plot(residuals(m1, type="response"))
+m1_Res1 <- simulateResiduals(m1)
+plot(m1_Res1, quantreg = T)
+testDispersion(m1_Res1)
+
+```
+
+```{r}
+emmip(
+  m1,
+  amplificance_method ~ filter,
+  type = "response",
+  CIs = TRUE
+) +
+  scale_y_continuous(
+    limits = c(0, NA),
+    labels = scales::label_percent()
+  ) +
+  labs(
+    x = "Filter",
+    y = "Estimated detection probability",
+    colour = "Amplification method",
+    shape = "Amplification method",
+    linetype = "Amplification method",
+    title = "Parasite detection by filter and amplification method",
+    subtitle = "Points: model estimates; bars: 95% confidence intervals"
+  ) +
+  theme_bw()
+```
+
+## Stat 1 b: FILTER (*C*) + AMPLIF (*qPCR*, *LAMP*, *RAA*)  
+### Model selection 
+```{r}
+
+m_C_f0 <- glmmTMB(presence ~  amplificance_method + turb_z + season +
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial, data = edna_C)
+
+summary(m_C_f0)
+glmmTMB:::Anova.glmmTMB(m_C_f0, type=2)
+
+
+options(na.action = "na.fail")
+ddc <- MuMIn::dredge(m_C_f0, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m1c <- MuMIn::get.models(ddc, subset = 1)[[1]] 
+
+```
+
+### Best model
+```{r}
+
+summary(m1c)
+glmmTMB:::Anova.glmmTMB(m1c, type=2)
+
+m1c.emm <- emmeans(m1c,
+                  pairwise ~ amplificance_method,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1c.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m1c, type="response"))
+m1c_Res1 <- simulateResiduals(m1c)
+plot(m1c_Res1, quantreg = T)
+testDispersion(m1c_Res1)
+
+```
+
+```{r}
+emm <- emmeans(m1c, ~ amplificance_method, type = "response")
+plot_data <- as.data.frame(emm)
+
+cld_data <- as.data.frame(
+  multcomp::cld(
+    emm,
+    adjust = "bonferroni",
+    Letters = LETTERS
+  )
+)
+
+plot_data <- plot_data |>
+  left_join(
+    cld_data |> select(amplificance_method, .group),
+    by = "amplificance_method"
+  ) |>
+  mutate(
+    .group = trimws(.group),
+    amplificance_method = factor(
+      amplificance_method,
+      levels = c("LAMP", "RAA", "qPCR")
+    )
+  )
+
+ggplot(plot_data, aes(x = prob, y = amplificance_method)) +
+  geom_errorbar(
+    aes(xmin = asymp.LCL, xmax = asymp.UCL),
+    orientation = "y",
+    width = 0.2,
+    linewidth = 0.7
+  ) +
+  geom_point(size = 3) +
+  geom_text(
+    aes(x = asymp.UCL + 0.025, label = .group),
+    hjust = 0,
+    size = 4
+  ) +
+  scale_x_continuous(
+    limits = c(0, NA),
+    breaks = seq(0, 0.5, 0.1),
+    labels = scales::label_percent()
+  ) +
+  labs(
+    title = "Effect of different molecular methods on detection sensitivity with filter C",
+    x = "Estimated probability of detection",
+    y = "Amplification method"
+  ) +
+  theme_minimal()
+```
+
+
+## *p*-value correction
+
+When applying two hypothesis testing on the same data, we have to apply *p*-value correction, in order to be allowed to draw conclusions. 
+
+- The most strict correction is the Bonferroni correction.
+- **Holm** or Holm-Bonferroni is less strict control, but still applicable.
+- Sidak needs independence (we dont have). Its alternative is Holm.
+- Other corrections are even less strict, but have assumptions we dont meet.
+
+```{r}
+
+# log-odds scale
+# use previous emmeans for the rest
+filter_tests2 <- as.data.frame(
+  pairs(
+    emmeans(m1, 
+            ~ filter | amplificance_method
+            # ~ filter 
+            ),
+    adjust = "none"
+  )
+)
+
+method_tests2 <- as.data.frame(
+  pairs(
+    emmeans(m1c, ~ amplificance_method),
+    adjust = "none"
+  )
+)
+
+bind_rows(
+  filter_tests2 |> mutate(family = "Filter comparisons"),
+  method_tests2 |> mutate(family = "Methods within C")
+) |>
+  mutate(
+    p_holm = p.adjust(p.value, method = "holm"),
+    p_bonferroni = p.adjust(p.value, method = "bonferroni")
+  ) |>
+  kable()
+
+```
+
+# Stat 2: Full combination model  --> Supplement
+*fm* means the combination of filter types and amplification methods.
+
+```{r}
+
+edna$fm <- interaction(edna$filter, edna$amplificance_method, drop = TRUE, sep = "_")
+
+```
+
+### Model selection 
+
+```{r}
+
+m_fm_f0 <- glmmTMB(presence ~  fm + turb_z + season +
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial, data = edna)
+
+
+summary(m_fm_f0)
+glmmTMB:::Anova.glmmTMB(m_fm_f0, type=2)
+
+
+options(na.action = "na.fail")
+ddfm <- MuMIn::dredge(m_fm_f0, rank=AIC)
+options(na.action = "na.omit")
+m1fm <- MuMIn::get.models(ddfm, subset = 1)[[1]] 
+
+```
+
+### Best model
+
+```{r}
+
+summary(m1fm)
+glmmTMB:::Anova.glmmTMB(m1fm, type=2)
+
+m1fm.emm <- emmeans(m1fm,
+                  pairwise ~ fm,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m1fm.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m1fm, type="response"))
+m1fm_Res1 <- simulateResiduals(m1fm)
+plot(m1fm_Res1, quantreg = T)
+testDispersion(m1fm_Res1)
+
+```
+
+```{r}
+emm <- emmeans(m1fm, ~ fm, type = "response")
+
+plot_data <- as.data.frame(emm)
+
+cld_data <- as.data.frame(
+  multcomp::cld(
+    emm,
+    adjust = "bonferroni",
+    Letters = LETTERS
+  )
+)
+
+plot_data <- plot_data |>
+  left_join(
+    cld_data |> select(fm, .group),
+    by = "fm"
+  ) |>
+  mutate(
+    .group = trimws(.group),
+    fm = factor(fm, levels = rev(fm[order(prob)]))
+  )
+
+ggplot(plot_data, aes(x = prob, y = fm)) +
+  geom_errorbar(
+    aes(xmin = asymp.LCL, xmax = asymp.UCL),
+    orientation = "y",
+    width = 0.2,
+    linewidth = 0.7
+  ) +
+  geom_point(size = 3) +
+  geom_text(
+    aes(x = asymp.UCL + 0.025, label = .group),
+    hjust = 0,
+    size = 4
+  ) +
+  scale_x_continuous(
+    limits = c(0, NA),
+    breaks = seq(0, 0.5, 0.1),
+    labels = scales::label_percent()
+  ) +
+  labs(
+    x = "Estimated probability of detection",
+    y = NULL
+  ) +
+  theme_minimal() 
+```
+
+# Stat 3: eDNA validity
+
+
+## Snail concordance
+Are observation the same in snails than with eDNA?
+
+### Model selection 
+
+```{r}
+
+m_match2_full <- glmmTMB(match ~  method + turb_z + season +
+                     (1 | location) + (1 | samplingId) + (1 | sampleId),
+                   family = binomial, data = ev2 )
+
+
+summary(m_match2_full)
+glmmTMB:::Anova.glmmTMB(m_match2_full, type=2)
+
+options(na.action = "na.fail")
+d_match2 <- MuMIn::dredge(m_match2_full, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m_match2 <- MuMIn::get.models(d_match2, subset = 1)[[1]] 
+```
+
+### Best model
+
+```{r}
+
+summary(m_match2)
+glmmTMB:::Anova.glmmTMB(m_match2, type=2)
+
+m_match2.emm <- emmeans(m_match2,
+                  pairwise ~ method,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m_match2.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m_match2, type="response"))
+match2_Res1 <- simulateResiduals(m_match2)
+plot(match2_Res1, quantreg = T)
+#testDispersion(match2_Res1)
+testResiduals(match2_Res1)
+#testUniformity(match2_Res1)
+testCategorical(match2_Res1, catPred =~method)
+testCategorical(match2_Res1, ~location)
+testCategorical(match2_Res1, catPred =~location)
+testCategorical(match2_Res1, ~samplingId)
+testCategorical(match2_Res1, ~sampleId)
+#testOutliers(match2_Res1, type = "binomial")
+
+
+```
+
+```{r}
+# simulate 
+sim <- simulateResiduals(m_match2, n = 1000, seed = 123)
+plot(sim)
+
+
+mf <- model.frame(m_match2)
+
+
+testCategorical(
+  sim,
+  catPred = factor(mf[["method"]]),
+  plot = TRUE
+)
+
+testCategorical(
+  sim,
+  catPred = factor(mf[["location"]]),
+  plot = TRUE
+)
+
+testCategorical(
+  sim,
+  catPred = factor(mf[["samplingId"]]),
+  plot = TRUE
+)
+
+testCategorical(
+  sim,
+  catPred = factor(mf[["sampleId"]]),
+  plot = TRUE
+)
+```
+
+
+```{r}
+emm <- emmeans(m_match2, ~ method, type = "response")
+plot_data <- as.data.frame(emm)
+
+cld_data <- as.data.frame(
+  multcomp::cld(
+    emm,
+    adjust = "bonferroni",
+    Letters = LETTERS
+  )
+)
+
+plot_data <- plot_data |>
+  left_join(
+    cld_data |> select(method, .group),
+    by = "method"
+  ) |>
+  mutate(
+    .group = trimws(.group),
+    method = factor(method)
+  )
+
+ggplot(plot_data, aes(x = prob, y = method)) +
+  geom_errorbar(
+    aes(xmin = asymp.LCL, xmax = asymp.UCL),
+    orientation = "y",
+    width = 0.2,
+    linewidth = 0.7
+  ) +
+  geom_point(size = 3) +
+  geom_text(
+    aes(x = asymp.UCL + 0.025, label = .group),
+    hjust = 0,
+    size = 4
+  ) +
+  scale_x_continuous(
+    labels = scales::label_percent()
+  ) +
+  labs(
+    title = "Effect of different molecular methods"
+  ) +
+  theme_minimal()
+```
+
+## Confirmed pozitive cases (snail + is + / - in eDNA?)
+
+```{r}
+edna2 <-  edna |> filter(snail==T)
+```
+
+### Model selection
+```{r}
+m_fp_f0 <-  glmmTMB(presence ~  fm + turb_z + season +
+                      (1 | location) + (1 | samplingId) + (1 | sampleId),
+                    family = binomial, data = edna2 )
+
+
+summary(m_fp_f0)
+glmmTMB:::Anova.glmmTMB(m_fp_f0, type=2)
+
+options(na.action = "na.fail")
+d_pres <- MuMIn::dredge(m_fp_f0, rank=AIC, extra = alist(AICc, BIC, ICOMP, Cp))
+options(na.action = "na.omit")
+m_pres <- MuMIn::get.models(d_pres, subset = 1)[[1]] 
+m_pres2 <- MuMIn::get.models(d_pres, subset = 2)[[1]]
+anova(m_pres, m_pres2)
+glmmTMB:::Anova.glmmTMB(m_pres, type=2)
+glmmTMB:::Anova.glmmTMB(m_pres2, type=2)
+```
+
+### Best model
+```{r}
+
+summary(m_pres2)
+glmmTMB:::Anova.glmmTMB(m_pres2, type=2)
+
+m_pres2.emm <- emmeans(m_pres2,
+                  pairwise ~ fm,
+                  type = "response")
+
+
+kable(
+  multcomp::cld(m_pres2.emm,
+                    adjust="bonferroni",
+                    Letters=LETTERS) ) |>
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+plot(residuals(m_pres2, type="response"))
+pres2_Res1 <- simulateResiduals(m_pres2)
+plot(pres2_Res1, quantreg = T)
+#testDispersion(pres2_Res1)
+testResiduals(pres2_Res1)
+#testUniformity(pres2_Res1)
+testCategorical(pres2_Res1, ~ fm)
+#testOutliers(pres2_Res1, type = "binomial")
+
+```
+
+```{r}
+beta <- fixef(m_pres2)$cond["turb_z"]
+se <- sqrt(diag(vcov(m_pres2)$cond))["turb_z"]
+beta + c(-1, 1) * qnorm(0.975) * se
+```
+
