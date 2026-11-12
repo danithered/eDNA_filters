@@ -372,11 +372,14 @@ bind_rows(
 ) |>
   mutate(
     p_holm = p.adjust(p.value, method = "holm"),
-    p_bonferroni = p.adjust(p.value, method = "bonferroni")
+    p_bonferroni = p.adjust(p.value, method = "bonferroni"),
+    lower= estimate - qnorm(0.975) * SE,
+    upper= estimate + qnorm(0.975) * SE
   ) |>
   kable()
 
 ```
+
 
 # Stat 2: Full combination model  --> Supplement
 *fm* means the combination of filter types and amplification methods.
@@ -532,11 +535,11 @@ plot(match2_Res1, quantreg = T)
 #testDispersion(match2_Res1)
 testResiduals(match2_Res1)
 #testUniformity(match2_Res1)
-testCategorical(match2_Res1, catPred =~method)
-testCategorical(match2_Res1, ~location)
-testCategorical(match2_Res1, catPred =~location)
-testCategorical(match2_Res1, ~samplingId)
-testCategorical(match2_Res1, ~sampleId)
+# testCategorical(match2_Res1, catPred =~method)
+# testCategorical(match2_Res1, ~location)
+# testCategorical(match2_Res1, catPred =~location)
+# testCategorical(match2_Res1, ~samplingId)
+# testCategorical(match2_Res1, ~sampleId)
 #testOutliers(match2_Res1, type = "binomial")
 
 
@@ -649,7 +652,6 @@ glmmTMB:::Anova.glmmTMB(m_pres2, type=2)
 
 ### Best model
 ```{r}
-
 summary(m_pres2)
 glmmTMB:::Anova.glmmTMB(m_pres2, type=2)
 
@@ -663,16 +665,27 @@ kable(
                     adjust="bonferroni",
                     Letters=LETTERS) ) |>
   kable_styling(latex_options = "HOLD_position")
+```
 
 
+```{r}
+kable(
+  multcomp::cld(emmeans(m_pres2, ~ fm,
+                  type = "response"),
+              adjust="bonferroni",
+              Letters=LETTERS)) |>
+  kable_styling(latex_options = "HOLD_position")
+```
 
+
+```{r}
 plot(residuals(m_pres2, type="response"))
 pres2_Res1 <- simulateResiduals(m_pres2)
 plot(pres2_Res1, quantreg = T)
 #testDispersion(pres2_Res1)
 testResiduals(pres2_Res1)
 #testUniformity(pres2_Res1)
-testCategorical(pres2_Res1, ~ fm)
+# testCategorical(pres2_Res1, ~ fm)
 #testOutliers(pres2_Res1, type = "binomial")
 
 ```

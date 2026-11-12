@@ -77,6 +77,17 @@ edna <- data |>
          amplificance_method = relevel(amplificance_method, "qPCR"))
 ```
 
+
+```{r, eval=T}
+edna <- edna |>
+  group_by(location, date, season, filter, replication, volume, turbidity, amplificance_method, samplingId, snail, sampleId, turb_z) |>
+  summarise(
+    presence = any(presence),
+    .groups = "drop"
+  )
+  
+```
+
 ```{r}
 # presence: did the molecular method detect the presence of parasites?
 # snail: was the presence of parasites detected in snails?
