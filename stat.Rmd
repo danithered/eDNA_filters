@@ -44,15 +44,15 @@ data <- read.table("data.tsv", header=T)
 #| include: false
 str(data)
 sum(is.na(data$presence))
-with(data, table(molecular_method, is.na(presence)))
+with(data, table(method, is.na(presence)))
 
 data <- data |>
-  mutate(across(c(location, season, filter, molecular_method, barrelId), factor),
+  mutate(across(c(location, season, filter, method, barrelId), factor),
          volume   = as.numeric( trimws(volume, whitespace = "[ \\h\\v]") ), # trim unicode ws too
          presence = as.integer(presence))
 
 snail <- data |>
-  filter(molecular_method == "snail") |>
+  filter(method == "snail") |>
   group_by(barrelId) |>
   summarise(snail = as.integer(any(presence == 1, na.rm = TRUE)),
             consistent = n_distinct(na.omit(presence)) <= 1, .groups = "drop")
@@ -63,7 +63,8 @@ all(snail$consistent)
 
 ```{r}
 edna <- data |>
-  filter(molecular_method != "snail", !is.na(presence)) |>
+  filter(method != "snail", !is.na(presence)) |>
+  rename("molecular_method" = "method") |>
   droplevels() |>
   left_join(snail, by = "barrelId") |>
   mutate(sampleId = interaction(barrelId, filter, replication, drop = TRUE),

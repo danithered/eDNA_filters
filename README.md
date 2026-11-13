@@ -1,32 +1,52 @@
 # Data and analysis for research article *Beyond the snail: Optimising eDNA capture and amplification for surveillance of swimmer’s itch*
 
-## General
+This repository contains the data and statistical analyses supporting the research article Beyond the snail: Optimising eDNA capture and amplification for surveillanc
 
-Data collection and laboratory analyses were conducted by
+## Contributors
+
+### Data collection and laboratory analyses
 
   - Jan Procházka
   - Zikmund Bartoníček
   - Roman Leontovyč
   - Tomáš Macháček
+  
+### Data analysis
 
-## Files
+  - Amira Vörös
+  - Dániel Vörös
 
-  - `stat.Rmd`: includes all the statistical analyses reported in the article and additional diagnostics
-  - `data.tsv`: all the data in a .tsv format (separator: tabulator, with header, no row numbers, strings quoted with double quotes). The columns:
-    - `location`: the abbreviation of the lake (see in the associated paper), where the water and snails were sampled 
-    - `date`: the date of the sampling in a YY-MM-DD format
-    - `season`: the season of the sampling
-    - `filter`: filter type code (A: Sterivex PVDF 0.45 μm, B: Sylphium Dual Filter Capsule 0.45 μm, C: Sylphium Dual Filter Capsule 5 μm filters)
-    - `replication`: 
-    - `volume`
-    - `turbidity`
-    - `amplificance_method`
-    - `presence`
-    - `samplingId`
+## Repository contents
+
+  - `stat.Rmd`: Contains all statistical analyses reported in the article, together with additional model diagnostics.
+  - `data.tsv`: Contains the dataset in a .tsv format (separator: tabulator, with header, no row numbers, strings quoted with double quotes).
+  
+## Data description
+
+Each row represents an individual parasite detection measurement. The dataset contains the following variables:
+
+    - `location`: Abbreviation of the lake (see in the associated paper), where the water and snails were sampled. 
+    - `date`: Sampling date in YY-MM-DD format.
+    - `season`: Sampling season ("spring", "summer", "autumn")
+    - `filter`: Filter type ("A" - Sterivex PVDF 0.45 μm; "B" - Sylphium Dual Filter Capsule 0.45 μm; "C"" - Sylphium Dual Filter Capsule 5 μm)
+    - `replication`: Filter replicate identifier (replicates obtained from the same barrel using the same filter type).
+    - `volume`: Volume of water filtered.
+    - `turbidity`: Water turbidity measured at the sampling locations.
+    - `method`: Method of parasite detection: either the molecular detection method ("qPCR", "LAMP", "RAA") or "snail" cercaria shedding.
+    - `presence`: Binary indicator of parasite detection (present/absent).
+    - `barrelId`: Identifier of the original water sample collected from the lake, based on the combination of `location` and `season`.
+    
+## Running the analyses
+
+  - Install dependencies (see the Reproducibility section)
+  - Clone the repository `git clone git@github.com:danithered/eDNA_filters.git`
+  - Navigate to repository directory `cd /path/to/eDNA_filters`
+  - Compile report `quarto render stat.Rmd`
+  - Open the generated report in a web browser (stat.html) or in a pdf viewer (stat.pdf)
 
 ## Reproducibility
 
-The code was run in the following environment: 
+The analyses were performed using the following software environment.
 
 ```
 R version 4.6.2 (2026-10-29)
@@ -41,3 +61,4 @@ other attached packages:
 
 and compiled with `Quarto version 1.11.9`.
 
+For reproducibility, the analyses should ideally be run using the same software versions. Differences in R or package versions may lead to minor differences in numerical results or graphical output.

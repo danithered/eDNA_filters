@@ -1,4 +1,4 @@
-"location"	"date"	"season"	"filter"	"replication"	"volume"	"turbidity"	"molecular_method"	"presence"	"barrelId"
+"location"	"date"	"season"	"filter"	"replication"	"volume"	"turbidity"	"method"	"presence"	"barrelId"
 "VB"	24-05-15	"spring"	"A"	1	"2250"	1.33	"qPCR"	TRUE	"VB24-05-15"
 "VB"	24-05-15	"spring"	"A"	1	"2250"	1.33	"qPCR"	TRUE	"VB24-05-15"
 "VB"	24-05-15	"spring"	"A"	1	"2250"	1.33	"qPCR"	TRUE	"VB24-05-15"
