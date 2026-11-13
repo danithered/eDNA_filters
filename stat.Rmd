@@ -132,6 +132,10 @@ str(edna_C)
 - Stat 3
   - concordance (do the observations agree with the parasite presence detected in snails?)
   - aggregate categories (e.g., A_qPCR, C_RAA)
+- Stat 4
+  - sensitivity (do they detect the presence of parasites?)
+  - data filtered to cases when parasite presence is confirmed by observing snail cercarial shedding (could the molecular tests successfully detect parasite presence)
+  - aggregate categories (e.g., A_qPCR, C_RAA)
 
 # Stat 1 
 ## Stat 1 a: FILTER (*A*, *B*, *C*) + AMPLIF (*qPCR*, *LAMP*)
@@ -165,7 +169,7 @@ glmmTMB:::Anova.glmmTMB(m1, type=3)
 
 ```{r}
 m1.emm_f <- emmeans(m1,
-                  pairwise ~ filter,
+                  ~ filter,
                   type = "response")
 
 
@@ -179,7 +183,7 @@ kable(
 
 ```{r}
 m1.emm_a <- emmeans(m1,
-                  pairwise ~ molecular_method,
+                  ~ molecular_method,
                   type = "response")
 
 kable(
@@ -191,7 +195,7 @@ kable(
 
 ```{r}
 m1.emm <- emmeans(m1,
-                  pairwise ~ filter | molecular_method,
+                  ~ filter | molecular_method,
                   type = "response")
 
 
@@ -204,7 +208,7 @@ kable(
 
 ```{r}
 m1.emm_m_f <- emmeans(m1,
-                  pairwise ~ molecular_method | filter,
+                  ~ molecular_method | filter,
                   type = "response")
 
 
@@ -598,6 +602,8 @@ ggplot(plot_data, aes(x = prob, y = method)) +
 
 ```{r}
 edna2 <-  edna |> filter(snail==T)
+
+edna2 |> select(presence, fm) |> table()
 ```
 
 ### Model selection
