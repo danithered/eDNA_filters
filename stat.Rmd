@@ -1,6 +1,8 @@
 ---
 title: "eDNA filters"
-author: Amira Voros
+author: 
+   - Amira Voros
+   - Daniel Voros
 date: "2026-11-13"
 format:
    html:
