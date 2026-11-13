@@ -2,6 +2,8 @@
 
 This repository contains the data and statistical analyses supporting the research article *Beyond the snail: Optimising eDNA capture and amplification for surveillance of swimmer’s itch*
 
+[![DOI](https://zenodo.org/badge/1443135170.svg)](https://doi.org/10.5281/zenodo.24197082)
+
 ## Contributors
 
 ### Data collection and laboratory analyses
